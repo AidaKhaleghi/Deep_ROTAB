@@ -50,6 +50,7 @@ datasets/
 # Logs
 *.log
 logs/
+results/
 
 # OS
 .DS_Store
