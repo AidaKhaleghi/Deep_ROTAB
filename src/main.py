@@ -4,17 +4,19 @@ import numpy as np
 
 from data_loader import load_video_frames, load_video_masks, verify_frames_and_masks, load_temporal_roi
 from algorithm import ROTAB
+from algorithm_deep_b import ROTABDeepB
 from convert_frames_to_video import frames_to_video
 from metrics import binarize_foreground, compute_metrics
-from visualize_metrics import save_metrics_csv, plot_metrics
+from visualize_metrics import save_metrics_csv, plot_metrics, save_loss_csv, plot_loss
 
 
 # Configuration parameters
-INPUT_FOLDER = r"datasets\CDNet\intermittentObjectMotion\sofa\input"      # <-- set this to your frames folder
-MASK_FOLDER = r"datasets\CDNet\intermittentObjectMotion\sofa\groundtruth"        # <-- set this to your masks folder (optional)
-TEMPORAL_ROI_PATH = r"datasets\CDNet\intermittentObjectMotion\sofa\temporalROI.txt"  # <-- CDNet temporalROI.txt; set to None to treat every gt frame as valid
-DATASET_NAME = "sofa"        # <-- set this to your dataset name (optional)
-OUTPUT_FOLDER = r".\results\v1_baseline"    # <-- set this to where results go
+INPUT_FOLDER = r"datasets\CDNet\baseline\PETS2006\input"      # <-- set this to your frames folder
+MASK_FOLDER = r"datasets\CDNet\baseline\PETS2006\groundtruth"        # <-- set this to your masks folder (optional)
+TEMPORAL_ROI_PATH = r"datasets\CDNet\baseline\PETS2006\temporalROI.txt"  # <-- CDNet temporalROI.txt; set to None to treat every gt frame as valid
+DATASET_NAME = "PETS2006"        # <-- set this to your dataset name (optional)
+MODEL_TYPE = "deep_b"        # "baseline" (closed-form b) or "deep_b" (ConvLSTM b)
+OUTPUT_FOLDER = r".\results\v2_deep_b" if MODEL_TYPE == "deep_b" else r".\results\v1_baseline"
 RESIZE = None                             # e.g. (160, 120)
 
 RANK = 30
@@ -22,6 +24,10 @@ MU = 0.1
 ALPHA = 0.95
 LAM_PRIME = 0.04
 K = 10  # Number of initial frames to use for initialization
+
+# deep_b (ConvLSTM) settings
+LR = 1e-3          # Online learning rate for the b-network
+TRAIN_STEPS = 1    # Gradient steps per frame
 
 DELTA = 0.1              # Threshold on |S| (normalized [0,1] scale) to binarize the foreground mask
 METRIC_PRINT_INTERVAL = 100  # Print running metrics every N frames (only used when MASK_FOLDER is set)
@@ -69,18 +75,35 @@ def main():
         roi_start, roi_end = load_temporal_roi(TEMPORAL_ROI_PATH)
         print(f"Temporal ROI: ground truth is valid for frames {roi_start} to {roi_end}.")
 
-    model = ROTAB(
-        init_frames=frames[:K],
-        rank=RANK,
-        mu=MU,
-        alpha=ALPHA,
-        lam_prime=LAM_PRIME
-    )
+    if MODEL_TYPE == "deep_b":
+        model = ROTABDeepB(
+            init_frames=frames[:K],
+            rank=RANK,
+            mu=MU,
+            alpha=ALPHA,
+            lam_prime=LAM_PRIME,
+            lr=LR,
+            train_steps=TRAIN_STEPS
+        )
+        print(f"Using ROTABDeepB (ConvLSTM b) on device: {model.device}")
+    else:
+        model = ROTAB(
+            init_frames=frames[:K],
+            rank=RANK,
+            mu=MU,
+            alpha=ALPHA,
+            lam_prime=LAM_PRIME
+        )
 
     metric_frame_numbers, precisions, recalls, f1s = [], [], [], []
+    loss_frame_numbers, losses = [], []
 
     for i, (frame, frame_name) in enumerate(zip(frames[K:], frame_names[K:])):
         L, S = model.process_frame(frame)
+
+        if getattr(model, "last_loss", None) is not None:
+            loss_frame_numbers.append(i + K + 1)
+            losses.append(model.last_loss)
 
         gt_mask = mask_by_name.get(frame_name[:-4])
         if gt_mask is not None:
@@ -102,7 +125,8 @@ def main():
         output_path = os.path.join(final_output_folder, f"result_{frame_name}")
         cv2.imwrite(output_path, side_by_side)
         if (i + 1) % METRIC_PRINT_INTERVAL == 0:
-            print(f"Processed frame {i+K+1}/{len(frames)}: {output_path}")
+            loss_info = f" | net loss: {model.last_loss:.6f}" if getattr(model, "last_loss", None) is not None else ""
+            print(f"Processed frame {i+K+1}/{len(frames)}: {output_path}{loss_info}")
 
     frames_to_video(final_output_folder, os.path.join(final_output_folder, f"{DATASET_NAME}.mp4"), delete_frames=DELETE_FRAMES_AFTER_VIDEO)
 
@@ -115,6 +139,12 @@ def main():
         print(f"Saved per-frame metrics to: {metrics_csv_path}")
 
         plot_metrics(metrics_csv_path, final_output_folder)
+
+    if losses:
+        loss_csv_path = os.path.join(final_output_folder, "network_loss.csv")
+        save_loss_csv(loss_csv_path, loss_frame_numbers, losses)
+        print(f"Saved per-frame network loss to: {loss_csv_path}")
+        plot_loss(loss_frame_numbers, losses, final_output_folder)
 
     print("Processing complete. Results saved in:", final_output_folder)
 

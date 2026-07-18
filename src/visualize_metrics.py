@@ -107,6 +107,48 @@ def plot_running_average(frames, precisions, recalls, f1s, output_path):
     plt.close(fig)
 
 
+def save_loss_csv(csv_path, frame_numbers, losses):
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["frame", "loss"])
+        for frame, loss in zip(frame_numbers, losses):
+            writer.writerow([frame, f"{loss:.8f}"])
+
+
+def plot_loss(frame_numbers, losses, output_folder, window=None):
+    frames = np.array(frame_numbers)
+    losses = np.array(losses)
+    if len(frames) == 0:
+        print("No loss values found; skipping loss plot.")
+        return
+    if window is None:
+        window = max(1, min(50, len(frames) // 10))
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    color = SERIES_COLORS["precision"]
+    ax.plot(frames, losses, color=color, linewidth=0.8, alpha=0.25)
+    smoothed = rolling_mean(losses, window)
+    ax.plot(frames, smoothed, color=color, linewidth=2, label="network loss")
+    last_valid = np.where(~np.isnan(smoothed))[0]
+    if len(last_valid) > 0:
+        idx = last_valid[-1]
+        ax.annotate(f" {smoothed[idx]:.2e}", (frames[idx], smoothed[idx]),
+                    color=color, fontsize=9, va="center", fontweight="bold")
+
+    _style_axes(ax)
+    # Loss lives on its own scale (typically ~1e-4), not in [0, 1]
+    ax.set_ylim(0, np.nanmax(losses) * 1.05)
+    ax.set_xlabel("Frame number", color=AXIS_COLOR)
+    ax.set_ylabel("Loss", color=AXIS_COLOR)
+    ax.set_title(f"Online network loss per frame (rolling mean, window={window})", fontsize=11)
+    ax.legend(loc="upper right", frameon=False, fontsize=9)
+    fig.tight_layout()
+    output_path = os.path.join(output_folder, "network_loss.png")
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+    print(f"Saved loss plot: {output_path}")
+
+
 def plot_metrics(csv_path, output_folder, window=None):
     frames, precisions, recalls, f1s = load_metrics_csv(csv_path)
     if len(frames) == 0:
