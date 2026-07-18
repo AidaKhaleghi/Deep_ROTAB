@@ -73,9 +73,23 @@ def load_video_masks(path, resize=None):
         mask = (mask > 127).astype(np.float32)
 
         masks.append(mask)
-        mask_names.append(mask_name[2:])  # Remove the first two characters from the mask name (e.g. gt000001.png -> 000001.png)
+        mask_names.append(mask_name[2:-4])  # Remove the first two characters from the mask name (e.g. gt000001.png -> 000001.png)
 
     return masks, mask_names
+
+
+def load_temporal_roi(path):
+    if not os.path.isfile(path):
+        raise ValueError(f"Temporal ROI file '{path}' not found.")
+
+    with open(path, "r") as f:
+        first_line = f.readline().strip()
+
+    parts = first_line.split()
+    if len(parts) < 2:
+        raise ValueError(f"Temporal ROI file '{path}' must contain two numbers on the first line, got: '{first_line}'")
+
+    return int(parts[0]), int(parts[1])
 
 
 def verify_frames_and_masks(frame_names, mask_names):
