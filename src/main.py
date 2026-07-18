@@ -16,7 +16,7 @@ MASK_FOLDER = r"datasets\CDNet\baseline\PETS2006\groundtruth"        # <-- set t
 TEMPORAL_ROI_PATH = r"datasets\CDNet\baseline\PETS2006\temporalROI.txt"  # <-- CDNet temporalROI.txt; set to None to treat every gt frame as valid
 DATASET_NAME = "PETS2006"        # <-- set this to your dataset name (optional)
 MODEL_TYPE = "deep_b"        # "baseline" (closed-form b) or "deep_b" (ConvLSTM b)
-OUTPUT_FOLDER = r".\results\v2_deep_b" if MODEL_TYPE == "deep_b" else r".\results\v1_baseline"
+OUTPUT_FOLDER = r".\results\v3_deep_b" if MODEL_TYPE == "deep_b" else r".\results\v1_baseline"
 RESIZE = None                             # e.g. (160, 120)
 
 RANK = 30

@@ -11,15 +11,18 @@ def torch_soft_threshold(z, thresh):
 
 
 class ROTABDeepB:
-    """ROTAB variant where Step 1 (the closed-form solve for b[t]) is replaced
-    by an online-trained ConvLSTM network.
+    """ROTAB variant where the closed-form solve for b[t] is replaced by an
+    online-trained ConvLSTM network.
 
-    Per frame (test-then-train):
-      1. Forward pass -> b[t]; this prediction is used by the algorithm.
-      2. Loss = 0.5*||D - L(b) - S(b)||_F^2 + lam'*||S(b)||_1, backward, one
-         (or more) optimizer step(s) on this frame only.
-      3. Steps 2 and 3 of the algorithm (soft-threshold for S, RLS for X, Y)
-         run unchanged.
+    Per frame:
+      1. S[t] = soft_threshold(D - X diag(b[t-1]) Y^T, lam') using the
+         previous b.
+      2. Forward pass with (D, D - S[t]) -> b[t]; this prediction is used by
+         the algorithm. Loss = 0.5*||D - L(b) - S[t]||_F^2 + lam'*||S[t]||_1
+         with S[t] held fixed, backward, one (or more) optimizer step(s) on
+         this frame only (test-then-train: the weight update only affects
+         future frames).
+      3. RLS updates for X, Y run unchanged, using b[t] and S[t].
 
     The ConvLSTM hidden state carries across frames but is detached each frame
     (truncated backpropagation through time of length 1).
@@ -44,7 +47,6 @@ class ROTABDeepB:
 
         self.RX = self.mu * np.eye(self.R)
         self.RY = self.mu * np.eye(self.R)
-        self.S_prev = np.zeros((M, N))
         self.mu_diff = mu * (1 - alpha)
 
         # Network that replaces Step 1, warm-started at b0 = s[:R]
@@ -56,15 +58,19 @@ class ROTABDeepB:
         self.state = None  # ConvLSTM (h, c), detached between frames
         self.last_loss = None
 
-    def _predict_and_train(self, D):
+    def _predict_and_train(self, D, S):
         D_t = torch.as_tensor(D, dtype=torch.float32, device=self.device)
-        S_prev_t = torch.as_tensor(self.S_prev, dtype=torch.float32, device=self.device)
+        S_t = torch.as_tensor(S, dtype=torch.float32, device=self.device)
         # Input channels: current frame and its background-only residual
-        inp = torch.stack([D_t, D_t - S_prev_t]).unsqueeze(0)  # (1, 2, H, W)
+        inp = torch.stack([D_t, D_t - S_t]).unsqueeze(0)  # (1, 2, H, W)
 
         # X, Y are constants for the network update (no gradient through them)
         X_t = torch.as_tensor(self.X, dtype=torch.float32, device=self.device)
         Y_t = torch.as_tensor(self.Y, dtype=torch.float32, device=self.device)
+
+        # Sparsity term of the (fixed) S[t]: constant w.r.t. the network,
+        # included so the reported loss matches the model objective.
+        sparsity = self.lam_prime * S_t.abs().mean()
 
         b_used = None
         state_used = None
@@ -77,10 +83,8 @@ class ROTABDeepB:
                 state_used = state_new
 
             L = (X_t * b_pred) @ Y_t.T  # X diag(b) Y^T
-            Z = D_t - L
-            S = torch_soft_threshold(Z, self.lam_prime)
-            recon = D_t - L - S
-            loss = 0.5 * recon.pow(2).mean() + self.lam_prime * S.abs().mean()
+            recon = D_t - L - S_t
+            loss = 0.5 * recon.pow(2).mean() + sparsity
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -94,13 +98,14 @@ class ROTABDeepB:
         X, Y = self.X, self.Y
         R = self.R
 
-        # Step 1: b[t] predicted by the ConvLSTM (trained online on this frame)
-        b_new = self._predict_and_train(D)
-
-        # Step 2: solve for S_t (soft thresholding) — unchanged
-        L_estimate = X @ np.diag(b_new) @ Y.T
+        # Step 1: solve for S_t (soft thresholding) using the previous b
+        L_estimate = X @ np.diag(self.b) @ Y.T
         Z = D - L_estimate
         S_new = soft_threshold(Z, self.lam_prime)
+
+        # Step 2: b[t] predicted by the ConvLSTM (trained online on this
+        # frame), using the freshly computed S_new
+        b_new = self._predict_and_train(D, S_new)
 
         # Step 3: update X, Y via RLS — unchanged
         F = D
@@ -123,7 +128,6 @@ class ROTABDeepB:
 
         # Store state for next frame
         self.X, self.Y, self.b = X_new, Y_new, b_new
-        self.S_prev = S_new
 
         L_new = X_new @ np.diag(b_new) @ Y_new.T
         return L_new, S_new
