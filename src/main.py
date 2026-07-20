@@ -20,7 +20,7 @@ MODEL_TYPE = "deep_bs"       # "baseline" (closed-form b, prox S), "deep_b" (Con
 OUTPUT_FOLDER = {
     "baseline": r".\results\v1_baseline",
     "deep_b": r".\results\v2_deep_b",
-    "deep_bs": r".\results\v4_deep_bs",
+    "deep_bs": r".\results\v5_deep_bs_new_loss",
 }[MODEL_TYPE]
 RESIZE = None                             # e.g. (160, 120)
 
@@ -35,8 +35,11 @@ LR = 1e-3          # Online learning rate for the networks
 TRAIN_STEPS = 1    # Gradient steps per frame
 S_CHANNEL = 16     # deep_bs only: hidden channels of the S-network
 S_LAYERS = 3       # deep_bs only: hidden conv layers of the S-network
+LAM_TV = 0.03      # deep_bs only: weight of the total-variation loss on S
+LAM_MOTION = 0.01  # deep_bs only: weight of the motion-gated sparsity loss
+MOTION_TAU = 0.03  # deep_bs only: |D[t]-D[t-1]| below this = static pixel
 
-DELTA = 0.1              # Threshold on |S| (normalized [0,1] scale) to binarize the foreground mask
+DELTA = 0.10              # Threshold on |S| (normalized [0,1] scale) to binarize the foreground mask
 METRIC_PRINT_INTERVAL = 100  # Print running metrics every N frames (only used when MASK_FOLDER is set)
 
 DELETE_FRAMES_AFTER_VIDEO = True  # Set to True to delete frames after creating the video, False to keep them
@@ -92,7 +95,10 @@ def main():
             lr=LR,
             train_steps=TRAIN_STEPS,
             s_channel=S_CHANNEL,
-            s_layers=S_LAYERS
+            s_layers=S_LAYERS,
+            lam_tv=LAM_TV,
+            lam_motion=LAM_MOTION,
+            motion_tau=MOTION_TAU
         )
         print(f"Using ROTABDeepBS (ConvLSTM b + conv S) on device: {model.device}")
     elif MODEL_TYPE == "deep_b":
@@ -116,7 +122,7 @@ def main():
         )
 
     metric_frame_numbers, precisions, recalls, f1s = [], [], [], []
-    loss_frame_numbers, losses = [], []
+    loss_frame_numbers, losses, loss_parts = [], [], []
 
     for i, (frame, frame_name) in enumerate(zip(frames[K:], frame_names[K:])):
         L, S = model.process_frame(frame)
@@ -124,6 +130,8 @@ def main():
         if getattr(model, "last_loss", None) is not None:
             loss_frame_numbers.append(i + K + 1)
             losses.append(model.last_loss)
+            if getattr(model, "last_loss_parts", None) is not None:
+                loss_parts.append(model.last_loss_parts)
 
         gt_mask = mask_by_name.get(frame_name[:-4])
         if gt_mask is not None:
@@ -161,10 +169,11 @@ def main():
         plot_metrics(metrics_csv_path, final_output_folder)
 
     if losses:
+        parts = loss_parts if len(loss_parts) == len(losses) else None
         loss_csv_path = os.path.join(final_output_folder, "network_loss.csv")
-        save_loss_csv(loss_csv_path, loss_frame_numbers, losses)
+        save_loss_csv(loss_csv_path, loss_frame_numbers, losses, parts=parts)
         print(f"Saved per-frame network loss to: {loss_csv_path}")
-        plot_loss(loss_frame_numbers, losses, final_output_folder)
+        plot_loss(loss_frame_numbers, losses, final_output_folder, parts=parts)
 
     print("Processing complete. Results saved in:", final_output_folder)
 

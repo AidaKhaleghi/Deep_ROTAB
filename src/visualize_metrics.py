@@ -107,15 +107,30 @@ def plot_running_average(frames, precisions, recalls, f1s, output_path):
     plt.close(fig)
 
 
-def save_loss_csv(csv_path, frame_numbers, losses):
+# Colors for loss components (total reuses the metric blue)
+LOSS_COLORS = {
+    "total": "#2a78d6",     # blue
+    "recon": "#1baf7a",     # aqua
+    "sparsity": "#eda100",  # yellow
+    "tv": "#9a5fd1",        # purple
+    "motion": "#d6552a",    # orange-red
+}
+
+
+def save_loss_csv(csv_path, frame_numbers, losses, parts=None):
+    # parts: optional list of dicts (one per frame) with loss components
+    part_names = list(parts[0].keys()) if parts else []
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["frame", "loss"])
-        for frame, loss in zip(frame_numbers, losses):
-            writer.writerow([frame, f"{loss:.8f}"])
+        writer.writerow(["frame", "loss"] + part_names)
+        for i, (frame, loss) in enumerate(zip(frame_numbers, losses)):
+            row = [frame, f"{loss:.8f}"]
+            if parts:
+                row += [f"{parts[i][name]:.8f}" for name in part_names]
+            writer.writerow(row)
 
 
-def plot_loss(frame_numbers, losses, output_folder, window=None):
+def plot_loss(frame_numbers, losses, output_folder, window=None, parts=None):
     frames = np.array(frame_numbers)
     losses = np.array(losses)
     if len(frames) == 0:
@@ -124,16 +139,22 @@ def plot_loss(frame_numbers, losses, output_folder, window=None):
     if window is None:
         window = max(1, min(50, len(frames) // 10))
 
+    series = [("total", losses)]
+    if parts:
+        for name in parts[0]:
+            series.append((name, np.array([p[name] for p in parts])))
+
     fig, ax = plt.subplots(figsize=(10, 5))
-    color = SERIES_COLORS["precision"]
-    ax.plot(frames, losses, color=color, linewidth=0.8, alpha=0.25)
-    smoothed = rolling_mean(losses, window)
-    ax.plot(frames, smoothed, color=color, linewidth=2, label="network loss")
-    last_valid = np.where(~np.isnan(smoothed))[0]
-    if len(last_valid) > 0:
-        idx = last_valid[-1]
-        ax.annotate(f" {smoothed[idx]:.2e}", (frames[idx], smoothed[idx]),
-                    color=color, fontsize=9, va="center", fontweight="bold")
+    for name, values in series:
+        color = LOSS_COLORS.get(name, AXIS_COLOR)
+        ax.plot(frames, values, color=color, linewidth=0.8, alpha=0.2)
+        smoothed = rolling_mean(values, window)
+        ax.plot(frames, smoothed, color=color, linewidth=2, label=name)
+        last_valid = np.where(~np.isnan(smoothed))[0]
+        if len(last_valid) > 0:
+            idx = last_valid[-1]
+            ax.annotate(f" {smoothed[idx]:.2e}", (frames[idx], smoothed[idx]),
+                        color=color, fontsize=8, va="center", fontweight="bold")
 
     _style_axes(ax)
     # Loss lives on its own scale (typically ~1e-4), not in [0, 1]
